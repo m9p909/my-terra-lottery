@@ -1,11 +1,14 @@
+use std::borrow::{Borrow, BorrowMut};
+use std::ops::Deref;
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, Addr};
 use cw2::set_contract_version;
 
 use crate::error::ContractError;
 use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state::{State, STATE};
+use crate::UserModel::{create_ticket, create_user, User};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:counter";
@@ -21,6 +24,7 @@ pub fn instantiate(
     let state = State {
         count: msg.count,
         owner: info.sender.clone(),
+        users: Default::default(),
     };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     STATE.save(deps.storage, &state)?;
@@ -41,6 +45,37 @@ pub fn execute(
     match msg {
         ExecuteMsg::Increment {} => try_increment(deps),
         ExecuteMsg::Reset { count } => try_reset(deps, info, count),
+        ExecuteMsg::PurchasTicket {} => try_purchase_ticket(deps, info)
+    }
+}
+
+pub fn save_user(addr: Addr, mut state: State) -> State {
+    let user = create_user(addr);
+    state.users.insert(addr.clone(), user);
+    return state;
+}
+
+pub fn purchase_ticket(addr: Addr<>, deps: DepsMut) -> State {
+    STATE.update(deps.storage, |mut state: State| -> State{
+        let mut userOpt: Option<&User> = state.users.get(&addr);
+        let mut user: &mut &User = userOpt.get_or_insert(&create_user(addr));
+        let mut tickets = user.tickets.as_ref();
+        tickets.push(create_ticket(user));
+
+        state
+    }).unwrap()
+}
+
+
+pub fn try_purchase_ticket(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    if info.funds[0].amount > 0.5 {
+        let result: State = purchase_ticket(info.sender, deps);
+        Ok(
+            Response::new().add_attribute("method", "try_purchase_ticket")
+                .add_attribute("user", result.users.get(&info.sender))
+        )
+    } else {
+        Ok(Response::new().add_attribute("method", "try_purchase_ticket"))
     }
 }
 
@@ -52,6 +87,7 @@ pub fn try_increment(deps: DepsMut) -> Result<Response, ContractError> {
 
     Ok(Response::new().add_attribute("method", "try_increment"))
 }
+
 pub fn try_reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Response, ContractError> {
     STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
         if info.sender != state.owner {
@@ -115,6 +151,15 @@ mod tests {
         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
         let value: CountResponse = from_binary(&res).unwrap();
         assert_eq!(18, value.count);
+    }
+
+    #[test]
+    fn purchase_ticket() {
+        let mut deps = mock_dependencies(&coins(2, "token"));
+        let msg = InstantiateMsg { count: 17 };
+        let info = mock_info("creator", &coins(2, "token"));
+        let msg = ExecuteMsg::PurchaseTicket {};
+        let res = execute(deps.as_mut(), mock_env(), info, msg);
     }
 
     #[test]
